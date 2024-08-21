@@ -1,0 +1,644 @@
+---
+title: "Telecom Customer Churn Analysis"
+author: "Quek Hong Rui"
+date: "2 August 2024"
+output:
+  pdf_document: 
+    toc: true 
+  html_document: default
+fontsize: 12pt
+urlcolor: blue
+header-includes:
+    - \usepackage{caption}
+---
+
+\captionsetup[table]{labelformat=empty}
+
+```{r setup, include=FALSE, warning = FALSE, message = FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+```
+
+```{r}
+
+## Essential package
+suppressPackageStartupMessages(library(tidyverse)) ## contains dplyr, ggplot2
+
+## Packages for aesthetics
+library(ggh4x) ## for centre alignment of faceted box plot
+suppressMessages(library(scales)) ## to include percentage sign in visual axes
+library(treemapify) ## for tree map 
+library(ggridges) ## for ridgeline plot 
+suppressMessages(library(viridis)) ## for viridis palette
+suppressMessages(library(gridExtra)) ## for arrangement of visuals
+library(ggtext) ## for text formatting in visuals
+library(knitr) ## to create aesthetic tables using kable()
+suppressMessages(library(kableExtra)) ## to format kable() tables
+
+```
+
+\newpage
+
+# Introduction
+
+This data analysis project investigates churn for a fictional telecom company based in California. Data on telecom churn was obtained [here](https://mavenanalytics.io/data-playground?page=7&pageSize=5)^[Contents include a two data sets and a data dictionary `telecom_data_dictionary.csv` to explain the variables in each data set. The data set used in this analysis is `telecom_customer_churn.csv`.] *(navigate to Telecom Customer Churn)*. This is a data set of **7,043** customers of the telecom company; and contains information on each customer's demographics, area of residence, contracts and subscriptions as well as whether the customer stayed, churned or joined at the end of Q2 2022. A snippet of the data set is shown below.
+
+```{r}
+
+df <- read.csv("telecom_customer_churn.csv", check.names = FALSE, na.strings = c("NA", ""))
+
+glimpse(df)
+
+```
+Through analysis, this project aims to distinguish customers who churn from those who do not churn, so that the telecom company can identify prospective churners. It also aims to create actionable insights on the possible drivers of churn specific to this company. By adopting this two-pronged approach, this project seeks to reduce the telecom company's churn rate and retain its customers in the long run. $\\$
+
+This analysis consists of three main sections: 
+
+1. **Data Validation and Cleaning** - to check if the data set is ready for analysis and rectify any problematic data values. 
+     
+2. **Exploratory Data Analysis and Data Visualization** - to analyse data and illustrate customer profiles and drivers of churn.
+     
+3. **Final Recommendations** — to close off with business recommendations to minimize churn and improve the company's current business situation.
+
+All steps of analysis are performed in `R`, with the use of `dplyr` and `ggplot2` packages. For presentation purposes, programming code has been excluded from this report. Refer to the `R Markdown` file for the full code. 
+
+\newpage
+
+# Data Validation
+
+## Overview
+
+Some common data problems include anomalies, missing values, incorrect data types, outliers^[Tukey's definition — values in the column below **Q1 - 1.5 * IQR** or above **Q3 * 1.5 * IQR**, where **Q1**, **Q3** and **IQR** refers to the 1st quartile, 3rd quartile and interquartile range of the values in the column.], structural errors *eg spelling and case inconsistencies, leading/trailing white spaces*. Data checks will be run in `R` to check if this data set faces any of these issues. We also check the distribution of numerical data in the data set.
+
+```{r, include = FALSE}
+
+## Counting number of unique values in the Customer ID column
+
+length(unique(df$`Customer ID`)) 
+
+```
+
+```{r, include = FALSE}
+
+## Counting number of unique values in the City column
+
+length(unique(df$City)) 
+
+```
+
+```{r, include = FALSE}
+
+## Counting number of missing values in each column of the data set
+
+data.frame(lapply(df, function (x) sum(is.na(x))), check.names = FALSE) %>% 
+  pivot_longer(`Customer ID`:`Churn Reason`, names_to = "Column Name", values_to = "Count of Missing Values") %>%
+  filter(`Count of Missing Values` > 0) %>%
+  kable(format = "latex", align = "lc", booktabs = TRUE, caption = "Columns in data set with missing values") %>%
+  row_spec(0, bold = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position")) 
+  
+```
+
+```{r, include = FALSE}
+
+## Getting unique levels in each categorical column
+
+categorical_cols <- c("Gender", "Married", "Offer", "Phone Service", "Multiple Lines", "Internet Service", "Internet Type", "Online Security", "Online Backup", "Device Protection Plan", "Premium Tech Support", "Streaming TV", "Streaming Movies", "Streaming Music", "Unlimited Data", "Contract", "Paperless Billing", "Payment Method", "Customer Status", "Churn Category", "Churn Reason") 
+
+sapply(df[, categorical_cols], function(x) unique(x))
+
+```
+
+```{r}
+
+## Getting summary statistics of the distribution of values in numerical columns of the data set
+
+data.frame(do.call(cbind, lapply(df[, sapply(df, is.numeric)], summary)), check.names = FALSE) %>%
+  rownames_to_column(var = "Summary Statistic") %>%
+  filter(`Summary Statistic` != "NA's") %>%
+  pivot_longer(`Age`: `Total Revenue`, names_to = "Numeric Column", values_to = "Value") %>%
+  pivot_wider(names_from = `Summary Statistic`, values_from = Value) %>%
+  rename("1st Quartile" = "1st Qu.", "3rd Quartile" = "3rd Qu.") %>%
+  kable(format = "latex", align = "lcccccc", booktabs = TRUE, caption = "\\textbf{Table 1}: Summary statistics for numeric columns in data set") %>%
+  row_spec(0, bold = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position", "scale_down")) 
+
+```
+
+From **Table 1**, there appears to be outliers in some numerical columns. Each box plot below shows the data distribution in each of these columns and confirms the presence of outliers.
+
+```{r, fig.height = 3}
+
+num_cols_bp <- df %>%
+  select(`Number of Dependents`, `Number of Referrals`, `Avg Monthly GB Download`, `Total Refunds`, `Total Extra Data Charges`, `Total Long Distance Charges`, `Total Revenue`) %>%
+  pivot_longer(`Number of Dependents`: `Total Revenue`, names_to = "col_name", values_to = "value", cols_vary = "slowest")
+
+boxplots <- ggplot(num_cols_bp) + 
+  geom_boxplot(aes(y = value), fill = "indianred", outlier.size = 0.25) + 
+  facet_wrap(~ col_name) +
+  labs(y = "", caption = "Note: Dots represent outliers based on Tukey's definition") +
+  theme_bw() +
+  theme(axis.ticks.x = element_blank(), axis.text.x = element_blank(), plot.caption = element_text(size = 8, face = "italic"))
+
+## just for better visual aesthetics
+
+design <- c(
+"
+AABBCC
+DDEEFF
+##GG##
+"
+)
+
+boxplots + facet_manual(~ col_name, design = design, scales = "free_y", labeller = label_wrap_gen())
+
+```
+Another step of the data validation stage is to verify the integrity of the `Total Revenue` column by checking if `Total Revenue` = `Total Charges` + `Total Extra Data Charges` + `Total Long Distance Charges` - `Total Refunds` for all rows. This formula was provided in the data dictionary. It appears that all values in this column have been computed correctly. $\\$
+
+```{r, include = FALSE}
+
+df %>% 
+  filter(!all.equal(`Total Revenue`, `Total Charges` + `Total Extra Data Charges` + `Total Long Distance Charges` - `Total Refunds`))
+
+```
+
+Through these preliminary data checks, data quality was evaluated and the results can be found in **Table A1** in the Appendix. Additionally, all columns in the data set have appropriate data types, so there is no need to perform data type conversion. 
+
+## Further Checks
+
+### Missing Values 
+
+Upon further inspection, it is found that the missing values in the data set do not occur randomly. 
+
+- The **682** missing values in the `Avg Monthly Long Distance Charges` and `Multiple Lines` columns come from the same observations in the data set, and correspond to the 682 customers whose `Phone Service` value is **No** *ie does not subscribe to home phone services with the telecom company*.
+
+```{r, include = FALSE}
+
+df %>%
+  filter(is.na(`Avg Monthly Long Distance Charges`) | is.na(`Multiple Lines`))
+
+df %>%
+  filter(is.na(`Avg Monthly Long Distance Charges`) | is.na(`Multiple Lines`)) %>%
+  filter(`Phone Service` == "Yes")
+
+df %>%
+  count(`Phone Service`)
+
+```
+
+- The **1,526** missing values in the `Internet Type`, `Avg Monthly GB Download`, `Online Security`, `Online Backup`, `Device Protection Plan`, `Premium Tech Support`, `Streaming TV`, `Streaming Movies`, `Streaming Music`, `Unlimited Data` columns also come from the same 1,526 observations where `Internet Service` is **No** *ie does not subscribe to Internet service with the telecom company*.
+
+```{r, include = FALSE}
+
+df %>%
+  filter(is.na(`Internet Type`) | is.na(`Avg Monthly GB Download`) | is.na(`Online Security`) | is.na(`Online Backup`) | is.na(`Device Protection Plan`) | is.na(`Premium Tech Support`) | is.na(`Streaming TV`) | is.na(`Streaming Movies`) | is.na(`Streaming Music`) | is.na(`Unlimited Data`))
+
+df %>%
+  filter(is.na(`Internet Type`) | is.na(`Avg Monthly GB Download`) | is.na(`Online Security`) | is.na(`Online Backup`) | is.na(`Device Protection Plan`) | is.na(`Premium Tech Support`) | is.na(`Streaming TV`) | is.na(`Streaming Movies`) | is.na(`Streaming Music`) | is.na(`Unlimited Data`)) %>%
+  filter(`Internet Service` == "Yes")
+
+df %>%
+  count(`Internet Service`)
+
+```
+
+- The **5,174** missing values in the `Churn Category` and `Churn Reason` columns come from the same 5,174 customers in the data set where `Customer Status` is not **Churned** *ie stayed with or joined the telecom company at the end of Q2 2022*.
+
+```{r, include = FALSE}
+
+df %>%
+  filter(is.na(`Churn Category`) | is.na(`Churn Reason`))
+
+df %>%
+  filter(is.na(`Churn Category`) | is.na(`Churn Reason`)) %>%
+  filter(`Customer Status` == "Churned")
+
+df %>%
+  filter(`Customer Status` != "Churned") %>%
+  nrow()
+
+```
+
+In conclusion, the presence of missing values in this data set is at worst a discrepancy between the data dictionary and the data itself and is generally not problematic. 
+
+- In the data set, when `Phone Service` is **No**, `Avg Monthly Long Distance Charges` and `Multiple Lines` have missing values as opposed to **0** and **No**, which are the values stated in the data dictionary. 
+
+- When `Internet Service` is **No**, the values in the `Internet Type`, `Avg Monthly GB Download`, `Online Security`, `Online Backup`, `Device Protection Plan`, `Premium Tech Support`, `Streaming TV`, `Streaming Movies`, `Streaming Music`, `Unlimited Data` will be missing as opposed to **0**, **No** or **None** as stated in the data dictionary.
+
+- In the data set, the `Churn Category` and `Churn Reason` columns only have missing values when `Customer Status` is not **Churned**. This is valid since the customer will not have any category or reason for churn that is applicable as he or she did not even churn.
+
+Overall, the missing values in this data set appear consistently in a way that is logical and easily understandable. As such, these missing values do not require further cleaning. 
+
+### Outliers
+
+Conventionally in data science, outliers are problems in data that have to be handled before analysis as they represent anomalous or noisy data. Upon further inspection of the outliers, in this case however, it might be more ideal to leave them untouched.
+
+```{r}
+
+data.frame(lapply(df[, c("Number of Dependents", "Number of Referrals", "Avg Monthly GB Download", "Total Extra Data Charges", "Total Long Distance Charges", "Total Refunds", "Total Revenue")], function(x) sum(x > quantile(x, 0.75, na.rm = TRUE) + 1.5 * (quantile(x, 0.75, na.rm = TRUE) - quantile(x, 0.25, na.rm = TRUE)), na.rm = TRUE)), check.names = FALSE) %>%
+  pivot_longer(`Number of Dependents`: `Total Revenue`, names_to = "Column Name", values_to = "Number of Outliers") %>%
+  mutate(`Proportion of Outliers` = paste0(round(100 *`Number of Outliers` / nrow(df), 2), "%")) %>%
+  kable(format = "latex", align = "lcc", booktabs = TRUE, caption = "\\textbf{Table 2}: Outliers count and proportion in columns with outliers") %>%
+  row_spec(0, bold = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+
+```
+
+From **Table 2** above, outliers form a significant proportion of data values in certain columns like `Number of Dependents` and `Total Extra Data Charges`. If outliers in these columns are dropped or replaced, there is a risk of transforming the original data set too much and affecting the results of analysis downstream. $\\$
+
+Furthermore, it might be useful to consider these extreme cases in the data set as they might not necessarily be erroneous data. For example, an observation with an outlying `Number of Referrals` value of **11** might represent an extremely satisfied customer who is keen on recommending the telecom company. In this context, the outliers might have some meaning to them. With these considerations in mind, the outliers were left untreated.
+
+### Negative Values
+
+Based on **Table 1**, in the `Monthly Charges` column, there are some negative values, as suggested by the column's negative minimum value. Having negative values for total monthly charge is counter-intuitive and could be a sign of incorrect data entry or that the customer received a monthly refund instead. As the `Monthly Charges` column is rather ambiguous, it will be excluded from analysis. This is unlikely a major loss of data as the `Total Charges` also provides information on customer charges and is in fact, a better choice because it contains clean data as shown in **Table A1**.
+
+```{r, include = FALSE}
+
+df %>%
+  filter(`Monthly Charge` < 0)
+
+```
+
+## Summary
+
+Overall, the data values in the data set generally align with the descriptions listed in the data dictionary and is rather clean, with zero to little need for additional data cleaning steps. $\\$
+
+In the next section, analysis is carried out on the validated data. 
+
+\newpage
+
+# Customer Profiling
+
+Now that the data has been validated and verified ready to be used for analysis, exploratory data analysis will be performed on the data set to segment and profile the customers. *Think*: What characteristics does a Churned customer have? How do they differ from Stayed customers? $\\$
+
+Following which, the identified differences will be presented through data visuals, and hypotheses will be proposed to unpack and make sense of these differences.
+
+## Overview
+
+Among the 7,043 customers in this data set, there are **1,869** who churned, **454** who just joined and **4,720** who stayed in Q2 2022.
+
+```{r, fig.height = 3.5}
+
+df %>%
+  count(`Customer Status`) %>%
+  ggplot(aes(x = `Customer Status`, y = n)) +
+  geom_col(aes(fill = `Customer Status`)) +
+  geom_text(aes(label = n), nudge_y = 350) +
+  scale_fill_manual(values = c("Churned" = "indianred1","Joined" = "khaki1", "Stayed" = "darkolivegreen2")) +
+  labs(title = "Number of customers who Stayed, Churned and Joined in Q2 2022\n", x = "", y = "Number of customers\n") +
+  theme_minimal() +
+  theme(legend.position = "none", 
+        plot.title = element_text(hjust = 0.5, size = 11), 
+        axis.text.x = element_text(size = 10, color = "black"),
+        axis.text.y = element_text(size = 9, color = "black"), 
+        plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"))
+
+```
+*Note: Even though the data set contains customers from the Joined* `Customer Status` *category, this analysis will mainly focus on the Churned and Stayed customers since the objective is to help reduce the company's churn rate and retain its Churned customers, as opposed to targeting a more 'neutral' group like the Joined customers. Also, not all variables or columns in the data set will be used for analysis — only appreciable ones are used.*
+
+## Results and Analysis
+
+Some key observations on the characteristics of the respective `Customer Status` groups:
+
+1. Churned customers typically **spend substantially less on the telecom company's services** as compared to Stayed customers. In addition, they typically have **fewer dependents** and are **unmarried**.
+
+```{r, fig.width = 10.5, fig.height = 10}
+
+cs_total_revenue <- df %>% 
+  group_by(`Customer Status`) %>%
+  summarize(median_total_revenue = median(`Total Revenue`)) %>%
+  ggplot(aes(x = `Customer Status`, y = median_total_revenue, fill = `Customer Status`)) +
+  geom_col() +
+  geom_text(aes(y = median_total_revenue + 150, label = median_total_revenue)) +
+  scale_fill_manual(values = c("Churned" = "indianred1","Joined" = "khaki1", "Stayed" = "darkolivegreen2")) + 
+  labs(title = "The median total revenue from **<span style='color: indianred1;'>Churned</span>** customers is less than one-third that from **<span style='color: darkolivegreen2;'>Stayed</span>** customers", x = "", y = "Median Total Revenue\n") + 
+  theme_minimal() +
+  theme(legend.position = "none", 
+        plot.title = element_textbox_simple(hjust = 0.5, halign = 0.5, margin = margin(0, 0, 30, 0), size = 15.5), 
+        axis.text.x = element_text(size = 12, color = "black"), 
+        axis.text.y = element_text(size = 11, color = "black"), 
+        axis.title.y = element_text(size = 12.5, color = "black"),
+        plot.margin = unit(c(0.5, 0.75, -0.4, 0.5), "cm"))
+
+cs_number_of_dependents <- df %>%
+  group_by(`Customer Status`) %>%
+  summarize(mean_nod = mean(`Number of Dependents`)) %>%
+  ggplot(aes(x = `Customer Status`, y = mean_nod, fill = `Customer Status`)) +
+  geom_col() +
+  geom_text(aes(y = mean_nod + 0.03, label = round(mean_nod, 2))) +
+  geom_hline(yintercept = mean(df$`Number of Dependents`), lty = "dashed") +
+  annotate("text", x = "Churned", y = 0.53, label = str_wrap(paste("Mean Number of Dependents:", round(mean(df$`Number of Dependents`), 2)), 17)) +
+  scale_fill_manual(values = c("Churned" = "indianred1","Joined" = "khaki1", "Stayed" = "darkolivegreen2")) +
+  labs(title = "On average, **<span style='color: indianred1;'>Churned</span>** customers have fewer dependents than **<span style='color: darkolivegreen2;'>Stayed</span>** customers", x = "", y = "Mean Number of Dependents\n") +
+  theme_minimal() +
+  theme(legend.position = "none", 
+        plot.title = element_textbox_simple(hjust = 0.5, halign = 0.5, margin = margin(0, 0, 30, 0), size = 15.5), 
+        axis.text.x = element_text(size = 12, color = "black"), 
+        axis.text.y = element_text(size = 11, color = "black"),
+        axis.title.y = element_text(size = 12.5, color = "black"),
+        plot.margin = unit(c(0.5, 0.5, -0.4, 0.75), "cm"))
+
+cs_married <- df %>%
+  group_by(`Customer Status`, `Married`) %>%
+  summarize(count = n()) %>%
+  mutate(fraction = count / sum(count), ymax = cumsum(fraction), ymin = lag(ymax)) %>%
+  ungroup() %>%
+  replace_na(list(ymin = 0)) %>%
+  mutate(label_position = 0.5 * (ymin + ymax), label = paste0("Count: ", count, "\n (", round(100 * fraction, 2), "%)")) %>%
+  ggplot(aes(fill = `Married`)) +
+  geom_rect(aes(ymax = ymax, ymin = ymin, xmax = 4, xmin = 3)) +
+  geom_label(aes(y = label_position, label = label), x = 4, show.legend = FALSE, size = 3) +
+  coord_polar(theta = "y", clip = "off") +
+  xlim(c(1, 5)) +
+  facet_wrap(~ `Customer Status`) + 
+  scale_fill_manual(values = c("#B8DE29FF", "#238A8DFF")) +
+  labs(title = "A greater proportion of **<span style='color: indianred1;'>Churned</span>** customers are unmarried as compared to **<span style='color: darkolivegreen2;'>Stayed</span>** customers") +
+  theme_void() +
+  theme(legend.position = "bottom", 
+        strip.text = element_text(size = 13.5, face = "bold"), 
+        plot.title = element_textbox_simple(hjust = 0.5, size = 15.5, halign = 0.5, margin = margin(0, 0, 25, 0)), 
+        legend.title = element_text(size = 12, face = "bold"), 
+        plot.margin = unit(c(-0.4, 0.5, -0.3, 0.5), "cm"), 
+        legend.text = element_text(size = 12))
+
+grid.arrange(arrangeGrob(cs_total_revenue, cs_number_of_dependents, ncol = 2), cs_married, ncol = 1)
+
+```
+Lower consumer spending *(which translates to lower revenue for the company)* might be a sign that the customer has little need for or is dissatisfied with the telecom company's services, which might be why they churn. This suggests why Churned customers spend less than Stayed customers. $\\$
+
+Customers with fewer dependents and are unmarried are likelier to churn possibly because they have minimal need for telecommunications services beyond the fundamentals. For example, someone who is single or has fewer dependents has fewer close contacts *eg partners and family members* that he/she needs to call or text by phone regularly. This customer might consider cancelling his/her contract plan with the telecom company to switch over to alternative value-for-money plans like prepaid plans.
+
+2. Churned customers also tend to **have made fewer referrals of the company** to their family and friends, and **stayed with the company for a shorter period of time** than Stayed customers.
+
+```{r, fig.height = 7, fig.width = 10}
+
+cs_number_of_referrals <- df %>% 
+  ggplot(aes(x = `Number of Referrals`, y = `Customer Status`, fill = `Customer Status`)) +
+  geom_boxplot() +
+  geom_text(data = df %>%
+              group_by(`Customer Status`) %>%
+              summarize(mean_nor = round(mean(`Number of Referrals`), 2)), 
+            aes(x = 12.5, y = `Customer Status`, label = paste("Mean:", mean_nor)), size = 4.5) +
+  scale_fill_manual(values = c("Churned" = "indianred1","Joined" = "khaki1", "Stayed" = "darkolivegreen2")) +
+  scale_x_continuous(limits = c(0, 13), breaks = seq(0, 12, by = 2)) +
+  labs(title = "Both mean and median number of referrals of **<span style='color: indianred1;'>Churned</span>** customers is smaller than that of **<span style='color: darkolivegreen2;'>Stayed</span>** customers", x = "\nNumber of Referrals", y = "", caption = "Note: Dots represent outliers based on Tukey's definition") + 
+  theme_minimal() +
+  theme(legend.position = "none", 
+        plot.title = element_textbox_simple(hjust = 0.5, halign = 0.5, margin = margin(0, 0, 15, 0), size = 15.5), 
+        axis.text.y = element_text(size = 12, color = "black"), 
+        axis.text.x = element_text(size = 12.5, color = "black"), 
+        plot.margin = unit(c(0.5, 0.5, 0.425, 0.5), "cm"), 
+        axis.title.x = element_text(size = 12.5), 
+        plot.caption = element_text(size = 9.5, face = "italic"))
+
+cs_tenure_in_months <- df %>%
+  ggplot(aes(x = `Tenure in Months`, y = `Customer Status`, fill = factor(stat(quantile)))) +
+  stat_density_ridges(geom = "density_ridges_gradient", calc_ecdf = TRUE, quantiles = 4, quantile_lines = TRUE, alpha = 0.6, scale = 2.3) +
+  scale_fill_viridis(option = "cividis", discrete = TRUE, alpha = 0.3, labels = c("Min to Lower Quartile", "Lower Quartile to Median", "Median to Upper Quartile", "Upper Quartile to Max")) +
+  labs(title = "The tenures of **<span style='color: indianred1;'>Churned</span>** customers are concentrated at smaller values than that of **<span style='color: darkolivegreen2;'>Stayed</span>** customers, with a lower median too\n", x = "\nTenure in Months", y = "") +
+  theme_ridges() +
+  theme(legend.position = "bottom",
+        axis.title.x = element_text(hjust = 0.5, size = 12.5), 
+        legend.title = element_blank(), 
+        plot.title = element_textbox_simple(hjust = 0.5, halign = 0.5, margin = margin(0, 0, 15, 0), face = "plain", size = 15.5),
+        plot.margin = unit(c(0.425, 0.5, 0.5, 0.5), "cm"))
+
+grid.arrange(cs_number_of_referrals, cs_tenure_in_months, nrow = 2, heights = c(0.7, 1))
+
+```
+This might be due to some displeasure that Churned customers have towards the telecom company's services, for whatever reason. Consequently, they may give fewer positive reviews or recommendations of the company to the people around them. Also because of their displeasure, they choose to end their subscriptions and churn. $\\$
+
+Given that many of them have been with the telecom company for a longer period of time, Stayed customers are more likely to have greater brand loyalty as they grow to be more familiar and comfortable with the company's services over their extended tenure. This might be why they do not end up churning like the Churned customers.
+
+\newpage
+
+3. As compared to Stayed customers, Churned customers are those who are **less likely to commit to longer-term plans** *eg 1 Year*, *2 Year contracts* and are **less likely to spend on supplementary subscriptions** with the company *eg Online Security*, *Online Backup*, *Device Protection Plan*, *Premium Tech Support*. 
+
+```{r, fig.height = 10, fig.width = 10}
+
+cs_contract <- df %>%
+  group_by(`Customer Status`, Contract) %>%
+  summarize(count = n()) %>%
+  mutate(group_total = sum(count)) %>%
+  ungroup() %>%
+  mutate(proportion = paste0(round(100 * count / group_total, 2), "%")) %>%
+  ggplot(aes(x = `Customer Status`, y = count, fill = Contract)) + 
+  geom_col(position = "fill") +
+  geom_text(aes(label = proportion), position = position_fill(vjust = 0.5)) +
+  scale_fill_manual(values = c("#F1BB7B", "#FD6467", "#D67236")) +
+  scale_y_continuous(labels = percent) +
+  labs(title = "Most **<span style='color: indianred1;'>Churned</span>**  customers only get monthly contracts while less than one-third of **<span style='color: darkolivegreen2;'>Stayed</span>** customers have monthly contracts", x = "", y = "Proportion of customers per Customer Status category\n") + 
+  theme_minimal() +
+  theme(legend.position = "bottom", 
+        plot.title = element_textbox_simple(hjust = 0.5, halign = 0.5, margin = margin(0, 0, 17.5, 0), size = 15.5), 
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 12), 
+        axis.text.x = element_text(size = 12, color = "black"), 
+        axis.text.y = element_text(size = 11, color = "black"),
+        axis.title.y = element_text(size = 12.5, color = "black"),
+        plot.margin = unit(c(0.5, 0.5, 0.6, 0.5), "cm"))
+
+cs_subscriptions <- df %>%
+  group_by(`Customer Status`) %>%
+  summarize(`Premium Tech Support` = mean(`Internet Service` == "Yes" & `Premium Tech Support` == "Yes"),
+            `Device Protection Plan` = mean(`Internet Service` == "Yes" & `Device Protection Plan` == "Yes"),
+            `Online Backup` = mean(`Internet Service` == "Yes" & `Online Backup` == "Yes"),
+            `Online Security` = mean(`Internet Service` == "Yes" & `Online Security` == "Yes")) %>%
+  pivot_longer(`Premium Tech Support`:`Online Security`, names_to = "Additional Subscription", values_to = "Proportion") %>%
+  mutate(`Label` = paste0(round(Proportion * 100, 2), "%")) %>%
+  ggplot(aes(x = `Customer Status`, y = Proportion, fill = `Additional Subscription`)) +
+  geom_col(position = "dodge") +
+  geom_text(aes(y = 0.5 * Proportion, label = Label), position = position_dodge(width = 0.9)) +
+  scale_fill_manual(values = c("#D67236", "#5B1A18", "#FD6467", "#F1BB7B")) +
+  scale_y_continuous(labels = percent) +
+  labs(title = "A smaller proportion of **<span style='color: indianred1;'>Churned</span>** customers subscribe to additional services than **<span style='color: darkolivegreen2;'>Stayed</span>** customers", x = "", y = "\nProportion of customers per Customer Status category who invest in additional subscriptions\n") +
+  theme_minimal() +
+  theme(legend.position = "bottom", 
+        plot.title = element_textbox_simple(hjust = 0.5, halign = 0.5, margin = margin(0, 0, 25, 0), size = 15.5), 
+        legend.title = element_text(size = 12, face = "bold"), 
+        legend.text = element_text(size = 12), 
+        axis.text.x = element_text(size = 11, color = "black"), 
+        axis.text.y = element_text(size = 12, color = "black"),
+        axis.title.x = element_text(size = 12.5, color = "black"),
+        plot.margin = unit(c(0.6, 0.5, 0.5, 0.5), "cm")) + 
+  coord_flip()
+
+grid.arrange(cs_contract, cs_subscriptions, nrow = 2)
+
+```
+This trend can be explained by the fact that customers who opt for low-commitment Month-to-Month contracts might not even have the intention to stay with the company to begin with. It is therefore not surprising that they churn in the near future. Furthermore, the Month-to-Month contract option makes it easier for customers to prematurely terminate their contracts since their losses would be smaller as compared to when they are on a 1 Year or 2 Year contract. This might suggest why many Churned customers have a monthly contract while many Stayed Customers do not. $\\$
+
+As for their lower tendency to spend on additional subscriptions, Churned customers might be customers who have little to no need for such services from the company in the first place. In comparison to Stayed customers, they might be less reliant on the telecom company's services. As a result, they churn. 
+
+## Summary
+
+Through exploratory data analysis, some distinctions between Churned and Stayed customers have been highlighted. In short, Churned customers tend to be characterized by:
+
+- low revenue customers who are not spending much on the company's services
+- customers who do not subscribe to the company's additional paid services
+- customers who have few dependents and/or are unmarried
+- customers who provide little referrals of the company
+- customers who have not been with the company for long
+- customers on a monthly contract
+
+With such 'risk factors' in mind, the telecom company can proceed to focus on customers who fit the aforementioned criteria and target them through specific strategies so as to better engage and retain them. Based on the findings of this analysis, these are the customers who might potentially churn in the near future. 
+
+\newpage
+
+# Drivers of Churn
+
+Using the `Churn Category` and `Churn Reason` responses provided by customers who churned, this analysis proceeds to find the most popular reason(s) for churning which provides insight into the drivers of churn. The results of analysis are presented in the tree map below. 
+
+```{r, fig.width = 10, fig.height = 6}
+
+df %>%
+  filter(`Customer Status` == "Churned") %>%
+  group_by(`Churn Category`, `Churn Reason`) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  ggplot(aes(area = count, fill = `Churn Category`, label = paste(`Churn Reason`, count, sep = "\n"), subgroup = `Churn Category`)) +
+  geom_treemap() +
+  geom_treemap_subgroup_border(color = "white", size = 5) +
+  geom_treemap_text(place = "centre", reflow = TRUE, size = 7) +
+  scale_fill_manual(values = c("lavender", "powderblue", "lightslateblue", "orchid1", "lightpink1")) +
+  labs(title = "Frequency of Churn Reason by Churn Category\n", caption = "\nNote: The unlabelled rectangle in the Other Churn Category represents the Deceased Churn Reason, whose frequency count is 6.") +
+  theme(legend.position = "bottom", 
+        legend.title = element_text(size = 12, face = "bold"), 
+        plot.title = element_text(hjust = 0.5, size = 15.5), 
+        plot.caption = element_text(hjust = 0.5, face = "italic", size = 9.5),
+        legend.text = element_text(size = 12))
+
+```
+Based on the tree map, the `Churn Category` of **Competitor** exceeds the rest of the categories to account for the most cases of telecom churn recorded in Q2 2022. Particularly, a common gripe was that the telecom company's devices and offers were less attractive than its competitors'. As it contributes the most significantly to churn, the company might want to address this gap to effectively minimize customer churn. 
+
+\newpage
+
+# Final Recommendations
+
+To reduce churn most directly and swiftly, the telecom company can consider **revising its contract plans and devices**. Since competitor-related factors are the most common reasons for churn, the company needs to offer more attractive deals to its customers to remain competitive and keep them from switching over to its competitors' services. $\\$
+
+One key finding from this analysis is the characteristics of customers who churn. With this knowledge, the company can continue to monitor the behavior of its customers and **engage customers who match the identified characteristics in regular surveys**. These are customers with high potential to churn. By reaching out to these customers via surveys to understand their preferences and demands better, the company can tailor specific strategies to cater to and retain them. $\\$
+
+While the characteristics of Joined customers has not been discussed much in this analysis, from the data charts above, we can see that in many ways the characteristics of Joined customers resemble Churned customers. This means there is a possibility that these newly joined customers may churn in the near future too. To encourage them to stay longer, the telecom company can **offer newcomer initiatives and benefits** that grant certain privileges. $\\$
+
+Even though the company's objective is to reduce churn, it should not focus only on prospective churners and neglect the customers who have chosen to stay with them. By rolling out **mileage systems** for its customers, the telecom copany can reward customers for their support and further reinforce brand loyalty which contributes to lower churn in the long term. $\\$
+
+In short, to minimize churn holistically, it is important for the company to pay attention to the unique characteristics of each group of customers and adopt a mix of strategies to address these characteristics. $\\$
+
+Last but not least, the company should **continue with its data collection and analysis efforts** to validate the results obtained in this study. While this study provides the telecom company with useful insight for future action, it at best suggests associations or correlations which do not imply causation. More of such data analyses have to be performed to verify that the results of this study do not come from an isolated customer sample, and is truly reliable in guiding the company's decision-making.
+
+\newpage
+
+# Appendix
+
+```{r}
+
+cols_p1 <- c("Customer ID", "Gender", "Age", "Married", "Number of Dependents", "City", "Zip Code", "Latitude", "Longitude", "Number of Referrals", "Tenure in Months", "Offer", "Phone Service", "Avg Monthly Long Distance Charges", "Multiple Lines", "Internet Service", "Internet Type")
+  
+remarks_p1 <- c("$\\boldsymbol{\\cdot}$ 7,043 unique values$^{a}$. \n $\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ Appropriate as unique identifier.", 
+             "$\\boldsymbol{\\cdot}$ 2 unique categories: Female, Male. \n $\\boldsymbol{\\cdot}$ 0 missing values.", 
+             "$\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ No outliers.", 
+             "$\\boldsymbol{\\cdot}$ 2 unique categories: Yes, No. \n $\\boldsymbol{\\cdot}$ 0 missing values.", 
+             "$\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ \\textbf{Outliers present.}", 
+             "$\\boldsymbol{\\cdot}$ 1,106 unique values$^{b}$. \n $\\boldsymbol{\\cdot}$ 0 missing values.", 
+             "$\\boldsymbol{\\cdot}$ 0 missing values.", 
+             "$\\boldsymbol{\\cdot}$ 0 missing values.", 
+             "$\\boldsymbol{\\cdot}$ 0 missing values.", 
+             "$\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ \\textbf{Outliers present.}", 
+             "$\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ No outliers.",
+             "$\\boldsymbol{\\cdot}$ 6 unique categories: None, Offer A, Offer B, Offer C, Offer D, Offer E. \n $\\boldsymbol{\\cdot}$ 0 missing values.", 
+             "$\\boldsymbol{\\cdot}$ 2 unique categories: Yes, No. \n $\\boldsymbol{\\cdot}$ 0 missing values.",
+             "$\\boldsymbol{\\cdot}$ \\textbf{682 missing values.} \n $\\boldsymbol{\\cdot}$ No outliers.", 
+             "$\\boldsymbol{\\cdot}$ 3 unique categories: Yes, No, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{682 missing values.}", 
+             "$\\boldsymbol{\\cdot}$ 2 unique categories: Yes, No. \n $\\boldsymbol{\\cdot}$ 0 missing values.", 
+             "$\\boldsymbol{\\cdot}$ 4 unique categories: Cable, Fiber Optic, DSL, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{1,526 missing values.}")
+
+cleaning_p1 <- c("No", "No", "No", "No", "Yes", "No", "No", "No", "No", "Yes", "No", "No", "No", "Yes", "Yes", "No", "Yes")
+
+remarks_df1 <- data.frame("Column Name" = cols_p1,
+                         "Remarks" = remarks_p1,
+                         "Needs Cleaning / Further Checks?" = cleaning_p1, 
+                         check.names = FALSE)
+
+remarks_df1 %>%
+  mutate_all(linebreak) %>%
+  kable(format = "latex", escape = FALSE, booktabs = TRUE, align = "llc", caption = "\\textbf{Table A1}: Remarks on data quality in each column of data set") %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, width = "12.5em") %>%
+  column_spec(2, width = "17em") %>%
+  column_spec(3, width = "9em") %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+  
+```
+
+\newpage
+
+```{r}
+
+cols_p2 <- c("Avg Monthly GB Download", "Online Security", "Online Backup", "Device Protection Plan", "Premium Tech Support", "Streaming TV", "Streaming Movies", "Streaming Music", "Unlimited Data", "Contract", "Paperless Billing", "Payment Method", "Monthly Charge", "Total Charges", "Total Refunds", "Total Extra Data Charges", "Total Long Distance Charges")
+
+remarks_p2 <- c("$\\boldsymbol{\\cdot}$ \\textbf{1,526 missing values.} \n $\\boldsymbol{\\cdot}$ \\textbf{Outliers present.}", 
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: Yes, No, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{1,526 missing values.}", 
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: Yes, No, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{1,526 missing values.}",
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: Yes, No, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{1,526 missing values.}",
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: Yes, No, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{1,526 missing values.}",
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: Yes, No, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{1,526 missing values.}", 
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: Yes, No, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{1,526 missing values.}", 
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: Yes, No, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{1,526 missing values.}", 
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: Yes, No, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{1,526 missing values.}", 
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: One Year, Month-to-Month, Two Year. \n $\\boldsymbol{\\cdot}$ 0 missing values.",
+                "$\\boldsymbol{\\cdot}$ 2 unique categories: Yes, No. \n $\\boldsymbol{\\cdot}$ 0 missing values.", 
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: Credit Card, Bank Withdrawal, Mailed Check. \n $\\boldsymbol{\\cdot}$ 0 missing values", 
+                "$\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ No outliers. \n $\\boldsymbol{\\cdot}$ \\textbf{Negative values present.}",
+                "$\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ No outliers.", 
+                "$\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ \\textbf{Outliers present.}",
+                "$\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ \\textbf{Outliers present.}", 
+                "$\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ \\textbf{Outliers present.}")
+
+cleaning_p2 <- c("Yes", "Yes", "Yes", "Yes", "Yes", "Yes", "Yes", "Yes", "Yes", "No", "No", "No", "Yes", "No", "Yes", "Yes", "Yes")
+
+remarks_df2 <- data.frame("Column Name" = cols_p2,
+                         "Remarks" = remarks_p2,
+                         "Needs Cleaning / Further Checks?" = cleaning_p2, 
+                         check.names = FALSE)
+
+remarks_df2 %>%
+  mutate_all(linebreak) %>%
+  kable(format = "latex", escape = FALSE, booktabs = TRUE, align = "llc") %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, width = "12.5em") %>%
+  column_spec(2, width = "17em") %>%
+  column_spec(3, width = "9em") %>%
+  kable_styling(latex_options = c("striped", "hold_position")) 
+
+```
+
+\newpage
+
+```{r}
+
+cols_p3 <- c("Total Revenue", "Customer Status", "Churn Category", "Churn Reason")
+
+remarks_p3 <- c("$\\boldsymbol{\\cdot}$ 0 missing values. \n $\\boldsymbol{\\cdot}$ \\textbf{Outliers present.}", 
+                "$\\boldsymbol{\\cdot}$ 3 unique categories: Stayed, Churned, Joined. \n $\\boldsymbol{\\cdot}$ 0 missing values.",
+                "$\\boldsymbol{\\cdot}$ 6 unique categories: Competitor, Dissatisfaction, Other, Price, Attitude, NA. \n $\\boldsymbol{\\cdot}$ \\textbf{5,174 missing values.}", 
+                "$\\boldsymbol{\\cdot}$ 21 unique values$^{c}$. \n $\\boldsymbol{\\cdot}$ \\textbf{5,174 missing values.}")
+
+cleaning_p3 <- c("Yes", "No", "Yes", "Yes")
+
+remarks_df3 <- data.frame("Column Name" = cols_p3,
+                         "Remarks" = remarks_p3,
+                         "Needs Cleaning / Further Checks?" = cleaning_p3, 
+                         check.names = FALSE)
+
+remarks_df3 %>%
+  mutate_all(linebreak) %>%
+  kable(format = "latex", escape = FALSE, booktabs = TRUE, align = "llc") %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, width = "12.5em") %>%
+  column_spec(2, width = "17em") %>%
+  column_spec(3, width = "9em") %>%
+  kable_styling(latex_options = c("striped", "hold_position")) %>%
+  footnote(alphabet = c("\\\\textit{7,043 Customer IDs correspond to 7,043 customers, so each Customer ID corresponds to a unique customer, each customer only appears once in the data set — no duplicate rows.}", "\\\\textit{High cardinality data, will not be listed one-by-one here.}", "\\\\textit{Consists of NA and 20 other churn reasons. Refer to tree map on page 13 for all 20 values.}"), threeparttable = TRUE, escape = FALSE) 
+
+```
